@@ -71,6 +71,18 @@ defmodule PinchflatWeb.Router do
     get "/healthcheck", HealthController, :check, log: false
   end
 
+  # Token-protected JSON API (see PinchflatWeb.Api.SourceController). Not behind basic auth or CSRF:
+  # the route token is the credential.
+  scope "/api", PinchflatWeb.Api do
+    pipe_through [:api, :api_token_auth]
+
+    get "/media_profiles", SourceController, :media_profiles
+
+    resources "/sources", SourceController, only: [:index, :show, :create, :update, :delete] do
+      post "/extend", SourceController, :extend
+    end
+  end
+
   scope "/dev" do
     pipe_through :browser
 

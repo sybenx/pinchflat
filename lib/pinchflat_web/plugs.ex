@@ -54,6 +54,19 @@ defmodule PinchflatWeb.Plugs do
     send_unauthorized(conn)
   end
 
+  @doc """
+  If the request has `Authorization: Bearer <token>` and the token matches the `route_token` setting,
+  this plug does nothing. Otherwise, it sends a 401 response. Used by the JSON API.
+  """
+  def api_token_auth(conn, _opts) do
+    with ["Bearer " <> token] <- get_req_header(conn, "authorization"),
+         true <- Plug.Crypto.secure_compare(token, Settings.get!(:route_token)) do
+      conn
+    else
+      _ -> send_unauthorized(conn)
+    end
+  end
+
   defp credential_set?(credential) do
     credential && credential != ""
   end
