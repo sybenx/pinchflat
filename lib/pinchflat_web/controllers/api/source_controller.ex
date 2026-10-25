@@ -44,19 +44,51 @@ defmodule PinchflatWeb.Api.SourceController do
 
   def update(conn, %{"id" => id} = params) do
     with_source(conn, id, fn source ->
-      case Sources.update_source(source, Map.take(params, @update_fields)) do
-        {:ok, updated} ->
-          # A moved cutoff date can make more media pending. Already-queued media isn't queued twice.
-          if Map.has_key?(params, "download_cutoff_date") && updated.enabled do
-            DownloadingHelpers.enqueue_pending_download_tasks(updated)
-          end
+      # Pinchflat's daily retention job deletes downloaded media from before the cutoff date, so a later
+      # cutoff is refused while it would delete files, unless the caller says so with `allow_deleting_older`.
+      allowed = params["allow_deleting_older"] in [true, "true"]
 
-          json(conn, %{data: source_json(updated)})
+      case files_before_new_cutoff(source, params) do
+        count when count > 0 and not allowed ->
+          conn |> put_status(:unprocessable_entity) |> json(%{error: "would_delete", count: count})
 
-        {:error, %Ecto.Changeset{} = changeset} ->
-          changeset_error(conn, changeset)
+        _ ->
+          do_update(conn, source, params)
       end
     end)
+  end
+
+  defp do_update(conn, source, params) do
+    case Sources.update_source(source, Map.take(params, @update_fields)) do
+      {:ok, updated} ->
+        # A moved cutoff date can make more media pending. Already-queued media isn't queued twice.
+        if Map.has_key?(params, "download_cutoff_date") && updated.enabled do
+          DownloadingHelpers.enqueue_pending_download_tasks(updated)
+        end
+
+        json(conn, %{data: source_json(updated)})
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        changeset_error(conn, changeset)
+    end
+  end
+
+  defp files_before_new_cutoff(source, params) do
+    with value when is_binary(value) and value != "" <- params["download_cutoff_date"],
+         {:ok, new_cutoff} <- Date.from_iso8601(value),
+         true <- is_nil(source.download_cutoff_date) or Date.after?(new_cutoff, source.download_cutoff_date) do
+      MediaQuery.new()
+      |> where(
+        ^dynamic(
+          [mi],
+          ^MediaQuery.for_source(source) and ^MediaQuery.downloaded() and not (^MediaQuery.culling_prevented()) and
+            fragment("date(?) < ?", mi.uploaded_at, ^Date.to_iso8601(new_cutoff))
+        )
+      )
+      |> Repo.aggregate(:count)
+    else
+      _ -> 0
+    end
   end
 
   @doc """
