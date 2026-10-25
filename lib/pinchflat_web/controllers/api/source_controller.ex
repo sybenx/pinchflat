@@ -12,7 +12,6 @@ defmodule PinchflatWeb.Api.SourceController do
   alias Pinchflat.Repo
   alias Pinchflat.Sources
   alias Pinchflat.Sources.Source
-  alias Pinchflat.Profiles.MediaProfile
   alias Pinchflat.Sources.SourceDeletionWorker
   alias Pinchflat.Downloading.DownloadingHelpers
 
@@ -25,14 +24,6 @@ defmodule PinchflatWeb.Api.SourceController do
       |> Repo.all()
 
     json(conn, %{data: Enum.map(sources, &source_json/1)})
-  end
-
-  def media_profiles(conn, _params) do
-    profiles =
-      from(mp in MediaProfile, where: is_nil(mp.marked_for_deletion_at), order_by: [asc: mp.name])
-      |> Repo.all()
-
-    json(conn, %{data: Enum.map(profiles, &%{id: &1.id, name: &1.name})})
   end
 
   def show(conn, %{"id" => id}) do
