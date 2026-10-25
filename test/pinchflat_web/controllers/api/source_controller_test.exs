@@ -156,6 +156,35 @@ defmodule PinchflatWeb.Api.SourceControllerTest do
     end
   end
 
+  describe "stats" do
+    test "counts eligible and downloaded media, bytes, oldest upload and free space", %{authed: conn} do
+      source = source_fixture(download_cutoff_date: ~D[2025-01-01])
+      media_item_fixture(source_id: source.id, media_size_bytes: 1000, uploaded_at: ~U[2025-03-01 00:00:00Z])
+      media_item_fixture(source_id: source.id, media_size_bytes: nil, uploaded_at: ~U[2025-02-01 00:00:00Z])
+      media_item_fixture(source_id: source.id, media_filepath: nil, uploaded_at: ~U[2020-05-01 00:00:00Z])
+
+      media_item_fixture(
+        source_id: source.id,
+        media_filepath: nil,
+        prevent_download: true,
+        uploaded_at: ~U[2019-01-01 00:00:00Z]
+      )
+
+      assert %{"data" => data} = json_response(get(conn, ~p"/api/sources/#{source.id}/stats"), 200)
+
+      assert %{
+               "eligible" => 3,
+               "downloaded" => 2,
+               "downloaded_bytes" => 1000,
+               "sized" => 1,
+               "oldest_upload_date" => "2020-05-01",
+               "download_cutoff_date" => "2025-01-01"
+             } = data
+
+      assert is_integer(data["free_bytes"]) or is_nil(data["free_bytes"])
+    end
+  end
+
   describe "delete" do
     test "marks the source and keeps files by default", %{authed: conn} do
       source = source_fixture()

@@ -81,6 +81,7 @@ defmodule PinchflatWeb.Router do
 
     resources "/sources", SourceController, only: [:index, :show, :create, :update, :delete] do
       post "/extend", SourceController, :extend
+      get "/stats", SourceController, :stats
     end
   end
 

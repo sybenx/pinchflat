@@ -115,6 +115,58 @@ defmodule PinchflatWeb.Api.SourceController do
     end)
   end
 
+  @doc """
+  What downloading everything would take: media items that would download under the source's rules if it had
+  no cutoff (`eligible`, `downloaded` of them), the bytes downloaded so far and how many of those have a known size,
+  the oldest eligible upload date, and the free space where media is stored (`free_bytes`, null if unknown).
+  """
+  def stats(conn, %{"source_id" => id}) do
+    with_source(conn, id, fn source ->
+      eligible =
+        dynamic(
+          [mi, s],
+          ^MediaQuery.for_source(source) and not (^MediaQuery.download_prevented()) and
+            ^MediaQuery.format_matching_profile_preference() and ^MediaQuery.matches_source_title_regex() and
+            ^MediaQuery.meets_min_and_max_duration()
+        )
+
+      base = MediaQuery.new() |> MediaQuery.require_assoc(:media_profile) |> where(^eligible)
+
+      {downloaded, sized, bytes} =
+        base
+        |> where(^MediaQuery.downloaded())
+        |> select([mi], {count(mi.id), count(mi.media_size_bytes), sum(mi.media_size_bytes)})
+        |> Repo.one()
+
+      json(conn, %{
+        data: %{
+          source_id: source.id,
+          indexed: not is_nil(source.last_indexed_at),
+          eligible: Repo.aggregate(base, :count),
+          downloaded: downloaded,
+          downloaded_bytes: bytes || 0,
+          sized: sized,
+          oldest_upload_date: base |> select([mi], min(fragment("date(?)", mi.uploaded_at))) |> Repo.one(),
+          download_cutoff_date: source.download_cutoff_date,
+          free_bytes: free_bytes()
+        }
+      })
+    end)
+  end
+
+  defp free_bytes do
+    dir = Application.get_env(:pinchflat, :media_directory)
+
+    with {out, 0} <- System.cmd("df", ["-Pk", dir], stderr_to_stdout: true),
+         [_, line | _] <- String.split(out, "\n", trim: true),
+         [_, _, _, avail | _] <- String.split(line),
+         {kb, ""} <- Integer.parse(avail) do
+      kb * 1024
+    else
+      _ -> nil
+    end
+  end
+
   def delete(conn, %{"id" => id} = params) do
     with_source(conn, id, fn source ->
       delete_files = to_string(params["delete_files"]) == "true"
