@@ -77,6 +77,7 @@ defmodule PinchflatWeb.Router do
     pipe_through [:api, :api_token_auth]
 
     resources "/media_profiles", MediaProfileController, only: [:index, :show, :create, :update]
+    post "/media/delete_files", MediaItemController, :delete_files
 
     resources "/sources", SourceController, only: [:index, :show, :create, :update, :delete] do
       post "/extend", SourceController, :extend

@@ -87,6 +87,27 @@ defmodule PinchflatWeb.Api.SourceControllerTest do
       assert_enqueued(worker: MediaDownloadWorker, args: %{"id" => media_item.id})
     end
 
+    test "refuses a later cutoff that would delete downloaded files", %{authed: conn} do
+      source = source_fixture(download_cutoff_date: ~D[2024-01-01])
+      media_item_fixture(source_id: source.id, uploaded_at: ~U[2024-06-01 00:00:00Z])
+
+      conn1 = patch(conn, ~p"/api/sources/#{source.id}", %{download_cutoff_date: "2025-01-01"})
+      assert %{"error" => "would_delete", "count" => 1} = json_response(conn1, 422)
+      assert Repo.reload!(source).download_cutoff_date == ~D[2024-01-01]
+
+      conn2 =
+        patch(conn, ~p"/api/sources/#{source.id}", %{download_cutoff_date: "2025-01-01", allow_deleting_older: true})
+
+      assert %{"data" => %{"download_cutoff_date" => "2025-01-01"}} = json_response(conn2, 200)
+    end
+
+    test "allows a later cutoff when nothing would be deleted", %{authed: conn} do
+      source = source_fixture(download_cutoff_date: nil)
+      media_item_fixture(source_id: source.id, uploaded_at: ~U[2025-06-01 00:00:00Z])
+
+      assert json_response(patch(conn, ~p"/api/sources/#{source.id}", %{download_cutoff_date: "2025-01-01"}), 200)
+    end
+
     test "ignores fields outside the allowed list", %{authed: conn} do
       source = source_fixture()
       patch(conn, ~p"/api/sources/#{source.id}", %{original_url: "https://www.youtube.com/@other"})
