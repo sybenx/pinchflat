@@ -1,0 +1,33 @@
+name: sybenx image
+
+# Builds this fork's image (the tube-api branch plus this workflow) to ghcr.io/sybenx/pinchflat.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - sybenx-image
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/selfhosted.Dockerfile
+          platforms: linux/amd64
+          build-args: TARGETPLATFORM=linux/amd64
+          push: true
+          tags: |
+            ghcr.io/sybenx/pinchflat:tube-api
+            ghcr.io/sybenx/pinchflat:tube-api-${{ github.sha }}
