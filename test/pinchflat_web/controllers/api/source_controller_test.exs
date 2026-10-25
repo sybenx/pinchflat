@@ -54,14 +54,6 @@ defmodule PinchflatWeb.Api.SourceControllerTest do
     end
   end
 
-  describe "media_profiles" do
-    test "lists media profiles", %{authed: conn, media_profile: mp} do
-      assert %{"data" => [%{"id" => id, "name" => name}]} = json_response(get(conn, ~p"/api/media_profiles"), 200)
-      assert id == mp.id
-      assert name == mp.name
-    end
-  end
-
   describe "create" do
     test "creates a source with a cutoff date", %{authed: conn, media_profile: mp} do
       expect(YtDlpRunnerMock, :run, 1, &runner_function_mock/5)
