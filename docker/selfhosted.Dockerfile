@@ -29,8 +29,8 @@ RUN apt-get update -y && \
     mix local.rebar --force && \
     # FFmpeg (latest build that doesn't cause an illegal instruction error for some users - see #347)
     export FFMPEG_DOWNLOAD=$(case ${TARGETPLATFORM:-linux/amd64} in \
-    "linux/amd64")   echo "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2024-07-30-14-10/ffmpeg-N-116468-g0e09f6d690-linux64-gpl.tar.xz"   ;; \
-    "linux/arm64")   echo "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2024-07-30-14-10/ffmpeg-N-116468-g0e09f6d690-linuxarm64-gpl.tar.xz" ;; \
+    "linux/amd64")   echo "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"   ;; \
+    "linux/arm64")   echo "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz" ;; \
     *)               echo ""        ;; esac) && \
     curl -L ${FFMPEG_DOWNLOAD} --output /tmp/ffmpeg.tar.xz && \
     tar -xf /tmp/ffmpeg.tar.xz --strip-components=2 --no-anchored -C /usr/local/bin/ "ffmpeg" && \
@@ -73,6 +73,7 @@ RUN mix release
 
 FROM ${RUNNER_IMAGE}
 
+ARG TARGETPLATFORM
 ARG PORT=8945
 
 COPY --from=builder ./usr/local/bin/ffmpeg /usr/bin/ffmpeg
@@ -94,13 +95,21 @@ RUN apt-get update -y && \
       python3 \
       pipx \
       jq \
+      # unzip is needed for Deno
+      unzip \
       procps && \
+    # Install Deno - required for YouTube downloads (See yt-dlp#14404)
+    curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- -y --no-modify-path && \
     # Apprise
     export PIPX_HOME=/opt/pipx && \
     export PIPX_BIN_DIR=/usr/local/bin && \
     pipx install apprise && \
     # yt-dlp
-    curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
+    export YT_DLP_DOWNLOAD=$(case ${TARGETPLATFORM:-linux/amd64} in \
+    "linux/amd64")   echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"   ;; \
+    "linux/arm64")   echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64" ;; \
+    *)               echo "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"        ;; esac) && \
+    curl -L ${YT_DLP_DOWNLOAD} -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp && \
     yt-dlp -U && \
     # Set the locale
