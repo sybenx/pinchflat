@@ -5,6 +5,7 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
 
   alias Pinchflat.Media
   alias Pinchflat.Sources
+  alias Pinchflat.Settings
   alias Pinchflat.Utils.FilesystemUtils
   alias Pinchflat.Downloading.MediaDownloadWorker
 
@@ -134,7 +135,7 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
       end)
     end
 
-    test "does not set the job to retryable if youtube thinks you're a bot", %{media_item: media_item} do
+    test "snoozes the job instead of retrying if youtube thinks you're a bot", %{media_item: media_item} do
       expect(YtDlpRunnerMock, :run, 2, fn
         _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
         _url, :download, _opts, _ot, _addl -> {:error, "Sign in to confirm you're not a bot", 1}
@@ -143,7 +144,7 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
       Oban.Testing.with_testing_mode(:inline, fn ->
         {:ok, job} = Oban.insert(MediaDownloadWorker.new(%{id: media_item.id, quality_upgrade?: true}))
 
-        assert job.state == "completed"
+        assert job.state == "scheduled"
       end)
     end
 
@@ -430,6 +431,174 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
       end)
 
       perform_job(MediaDownloadWorker, %{id: media_item.id})
+    end
+  end
+
+  describe "perform/1 error handling and backoff" do
+    test "permanent errors prevent future downloads", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          {:error, "ERROR: [youtube] abc: Private video. Sign in if you've been granted access", 1}
+      end)
+
+      assert {:ok, :non_retry} = perform_job(MediaDownloadWorker, %{id: media_item.id})
+
+      media_item = Repo.reload(media_item)
+      assert media_item.prevent_download
+      assert media_item.last_error =~ "Private video"
+      assert media_item.download_failure_count == 0
+    end
+
+    test "permanent errors do not prevent downloads of already downloaded media", %{media_item: media_item} do
+      {:ok, media_item} = Media.update_media_item(media_item, %{media_filepath: "/video/existing.mp4"})
+
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, "Private video", 1}
+      end)
+
+      assert {:ok, :non_retry} = perform_job(MediaDownloadWorker, %{id: media_item.id, quality_upgrade?: true})
+
+      refute Repo.reload(media_item).prevent_download
+    end
+
+    test "a retryable failure that is not the last attempt does not count", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, "ERROR: Postprocessing: Conversion failed!", 1}
+      end)
+
+      assert {:error, :download_failed} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 1)
+      assert {:error, :download_failed} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 2)
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 0
+      assert media_item.download_retry_after == nil
+    end
+
+    test "a retryable failure on the last attempt counts once and backs off", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, "ERROR: Postprocessing: Conversion failed!", 1}
+      end)
+
+      assert {:error, :download_failed} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 3)
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 1
+      assert DateTime.diff(media_item.download_retry_after, DateTime.utc_now(), :hour) in 23..24
+      refute media_item.prevent_download
+      refute Media.pending_download?(media_item)
+    end
+
+    test "the worker uses 3 max attempts" do
+      assert MediaDownloadWorker.new(%{id: 1}).changes.max_attempts == 3
+    end
+
+    test "gives up on the 5th failed run", %{media_item: media_item} do
+      {:ok, media_item} =
+        Media.update_media_item(media_item, %{
+          download_failure_count: 4,
+          download_retry_after: DateTime.add(DateTime.utc_now(), -1, :minute)
+        })
+
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, "ERROR: Postprocessing: Conversion failed!", 1}
+      end)
+
+      assert {:error, :download_failed} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 3)
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 5
+      assert media_item.prevent_download
+      assert media_item.last_error =~ "Conversion failed"
+    end
+
+    test "a successful download resets the backoff", %{media_item: media_item} do
+      {:ok, media_item} =
+        Media.update_media_item(media_item, %{
+          download_failure_count: 3,
+          download_retry_after: DateTime.add(DateTime.utc_now(), -1, :minute),
+          last_error: "old error"
+        })
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 0
+      assert media_item.download_retry_after == nil
+      assert media_item.last_error == nil
+    end
+
+    test "does not download an item that is still backing off", %{media_item: media_item} do
+      {:ok, media_item} =
+        Media.update_media_item(media_item, %{
+          download_failure_count: 1,
+          download_retry_after: DateTime.add(DateTime.utc_now(), 1, :day)
+        })
+
+      stub(YtDlpRunnerMock, :run, fn _url, _action, _opts, _ot, _addl -> flunk("yt-dlp should not be called") end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+    end
+  end
+
+  describe "perform/1 when rate limited" do
+    test "a rate limit pauses downloads and snoozes without counting", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, "ERROR: HTTP Error 429: Too Many Requests", 1}
+      end)
+
+      assert {:snooze, seconds} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 3)
+      assert seconds in (24 * 3600 - 5)..(24 * 3600 + 1)
+
+      assert %DateTime{} = paused_until = Settings.get!(:downloads_paused_until)
+      assert DateTime.diff(paused_until, DateTime.utc_now(), :hour) in 23..24
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 0
+      assert media_item.download_retry_after == nil
+      refute media_item.prevent_download
+    end
+
+    test "YouTube's 'try again later' unavailable wording is a rate limit", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, _opts, _ot, _addl ->
+          {:error, "ERROR: [youtube] abc: Video unavailable. This content isn't available, try again later.", 1}
+      end)
+
+      assert {:snooze, _} = perform_job(MediaDownloadWorker, %{id: media_item.id})
+
+      refute Repo.reload(media_item).prevent_download
+      assert Settings.get!(:downloads_paused_until)
+    end
+
+    test "while paused, snoozes until the pause ends without calling yt-dlp", %{media_item: media_item} do
+      paused_until = DateTime.utc_now() |> DateTime.add(2, :hour) |> DateTime.truncate(:second)
+      Settings.set(downloads_paused_until: paused_until)
+
+      stub(YtDlpRunnerMock, :run, fn _url, _action, _opts, _ot, _addl -> flunk("yt-dlp should not be called") end)
+      stub(UserScriptRunnerMock, :run, fn _event, _data -> flunk("user scripts should not run while paused") end)
+
+      assert {:snooze, seconds} = perform_job(MediaDownloadWorker, %{id: media_item.id, force: true})
+      assert seconds in (2 * 3600 - 5)..(2 * 3600 + 1)
+
+      assert Repo.reload(media_item).media_filepath == nil
+    end
+
+    test "downloads again once the pause is over", %{media_item: media_item} do
+      Settings.set(downloads_paused_until: DateTime.add(DateTime.utc_now(), -1, :minute))
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+      assert Repo.reload(media_item).media_filepath != nil
     end
   end
 end

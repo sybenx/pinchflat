@@ -16,6 +16,7 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   alias Pinchflat.Metadata.MetadataParser
   alias Pinchflat.Metadata.MetadataFileHelpers
   alias Pinchflat.Utils.FilesystemUtils
+  alias Pinchflat.Downloading.DownloadBackoff
   alias Pinchflat.Downloading.DownloadOptionBuilder
 
   alias Pinchflat.YtDlp.Media, as: YtDlpMedia
@@ -34,8 +35,8 @@ defmodule Pinchflat.Downloading.MediaDownloader do
   def download_for_media_item(%MediaItem{} = media_item, override_opts \\ []) do
     case attempt_download_and_update_for_media_item(media_item, override_opts) do
       {:ok, media_item} ->
-        # Returns {:ok, %MediaItem{}}
-        Media.update_media_item(media_item, %{last_error: nil})
+        # Returns {:ok, %MediaItem{}}. Also clears any download backoff
+        Media.update_media_item(media_item, Map.merge(%{last_error: nil}, DownloadBackoff.reset_attrs()))
 
       {:error, error_atom, message} ->
         Media.update_media_item(media_item, %{last_error: StringUtils.wrap_string(message)})

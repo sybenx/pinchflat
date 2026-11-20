@@ -14,11 +14,13 @@ defmodule Pinchflat.Downloading.DownloadingHelpers do
   alias Pinchflat.Tasks
   alias Pinchflat.Sources.Source
   alias Pinchflat.Media.MediaItem
+  alias Pinchflat.Downloading.DownloadPause
   alias Pinchflat.Downloading.MediaDownloadWorker
 
   @doc """
   Starts tasks for downloading media for any of a sources _pending_ media items.
-  Jobs are not enqueued if the source is set to not download media. This will return :ok.
+  Jobs are not enqueued if the source is set to not download media, or while downloads
+  are paused after a rate limit (see DownloadPause). This will return :ok.
 
   NOTE: this starts a download for each media item that is pending,
   not just the ones that were indexed in this job run. This should ensure
@@ -30,9 +32,19 @@ defmodule Pinchflat.Downloading.DownloadingHelpers do
   def enqueue_pending_download_tasks(source, job_opts \\ [])
 
   def enqueue_pending_download_tasks(%Source{download_media: true} = source, job_opts) do
-    source
-    |> Media.list_pending_media_items_for()
-    |> Enum.each(&MediaDownloadWorker.kickoff_with_task(&1, %{}, job_opts))
+    case DownloadPause.paused_until() do
+      nil ->
+        source
+        |> Media.list_pending_media_items_for()
+        |> Enum.each(&MediaDownloadWorker.kickoff_with_task(&1, %{}, job_opts))
+
+      paused_until ->
+        Logger.info(
+          "Downloads paused until #{paused_until} UTC (rate limit). Not enqueueing downloads for source ##{source.id}"
+        )
+
+        :ok
+    end
   end
 
   def enqueue_pending_download_tasks(%Source{download_media: false}, _job_opts) do
@@ -53,14 +65,14 @@ defmodule Pinchflat.Downloading.DownloadingHelpers do
   @doc """
   Takes a single media item and enqueues a download job if the media should be
   downloaded, based on the source's download settings and whether media is
-  considered pending.
+  considered pending. Does nothing while downloads are paused after a rate limit.
 
   Returns {:ok, %Task{}} | {:error, :should_not_download} | {:error, any()}
   """
   def kickoff_download_if_pending(%MediaItem{} = media_item, job_opts \\ []) do
     media_item = Repo.preload(media_item, :source)
 
-    if media_item.source.download_media && Media.pending_download?(media_item) do
+    if media_item.source.download_media && !DownloadPause.paused?() && Media.pending_download?(media_item) do
       Logger.info("Kicking off download for media item ##{media_item.id} (#{media_item.media_id})")
 
       MediaDownloadWorker.kickoff_with_task(media_item, %{}, job_opts)

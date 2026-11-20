@@ -6,6 +6,7 @@ defmodule Pinchflat.Downloading.DownloadingHelpersTest do
   import Pinchflat.ProfilesFixtures
 
   alias Pinchflat.Tasks
+  alias Pinchflat.Settings
   alias Pinchflat.Downloading.DownloadingHelpers
   alias Pinchflat.Downloading.MediaDownloadWorker
 
@@ -13,6 +14,26 @@ defmodule Pinchflat.Downloading.DownloadingHelpersTest do
     test "enqueues a job for each pending media item" do
       source = source_fixture()
       media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+
+      assert :ok = DownloadingHelpers.enqueue_pending_download_tasks(source)
+
+      assert_enqueued(worker: MediaDownloadWorker, args: %{"id" => media_item.id})
+    end
+
+    test "does not enqueue jobs while downloads are paused after a rate limit" do
+      source = source_fixture()
+      _media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+      Settings.set(downloads_paused_until: DateTime.add(DateTime.utc_now(), 1, :hour))
+
+      assert :ok = DownloadingHelpers.enqueue_pending_download_tasks(source)
+
+      refute_enqueued(worker: MediaDownloadWorker)
+    end
+
+    test "enqueues jobs again once the pause has ended" do
+      source = source_fixture()
+      media_item = media_item_fixture(source_id: source.id, media_filepath: nil)
+      Settings.set(downloads_paused_until: DateTime.add(DateTime.utc_now(), -1, :minute))
 
       assert :ok = DownloadingHelpers.enqueue_pending_download_tasks(source)
 
@@ -113,6 +134,14 @@ defmodule Pinchflat.Downloading.DownloadingHelpersTest do
       profile = media_profile_fixture(%{livestream_behaviour: :exclude})
       source = source_fixture(%{media_profile_id: profile.id})
       media_item = media_item_fixture(source_id: source.id, media_filepath: nil, livestream: true)
+
+      assert {:error, :should_not_download} = DownloadingHelpers.kickoff_download_if_pending(media_item)
+
+      refute_enqueued(worker: MediaDownloadWorker)
+    end
+
+    test "does not enqueue a download job while downloads are paused", %{media_item: media_item} do
+      Settings.set(downloads_paused_until: DateTime.add(DateTime.utc_now(), 1, :hour))
 
       assert {:error, :should_not_download} = DownloadingHelpers.kickoff_download_if_pending(media_item)
 
