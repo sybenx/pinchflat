@@ -1,0 +1,29 @@
+#!/bin/sh
+# Pinchflat user script: extras/user-scripts/lifecycle
+# Called as: lifecycle <event> <media_item_json>
+#
+# media_pre_download: exit 1 (Pinchflat then sets prevent_download, so the
+# item is never queued again) only when the item's last_error is clearly
+# permanent. Anything else, including any failure of this script, exits 0
+# so downloads carry on as before. Undo for one item: Force download in the UI.
+
+event="$1"
+[ "$event" = "media_pre_download" ] || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
+
+err=$(printf '%s' "$2" | jq -r '.last_error // empty' 2>/dev/null) || exit 0
+[ -n "$err" ] || exit 0
+
+# Temporary: rate limits, bot checks, network trouble. Checked first so a
+# mixed message is never treated as permanent. "Video unavailable. This
+# content isn't available, try again later" is YouTube's rate-limit wording.
+if printf '%s' "$err" | grep -qiE "try again later|429|too many requests|not a bot|rate.?limit|timed out|connection|network|temporar|HTTP Error 5[0-9][0-9]|subtitles|conversion failed|postprocessing"; then
+  exit 0
+fi
+
+if printf '%s' "$err" | grep -qiE "members-only|channel's members|join this channel|private video|removed by the uploader|video unavailable|this video is unavailable|has been terminated|no longer available|confirm your age|inappropriate for some users|age.?restricted|copyright|not available in your country|uploader has not made this video available|blocked it in your country|geo.?restrict"; then
+  echo "permanent error, preventing download: $(printf '%s' "$err" | head -n 1 | cut -c1-200)"
+  exit 1
+fi
+
+exit 0

@@ -407,6 +407,21 @@ defmodule Pinchflat.MediaTest do
     end
   end
 
+  describe "list_pending_media_items_for/1 when testing download backoff" do
+    test "skips media items whose download_retry_after is in the future" do
+      source = source_fixture()
+      future = DateTime.add(DateTime.utc_now(), 1, :day)
+      past = DateTime.add(DateTime.utc_now(), -1, :day)
+
+      _backing_off = media_item_fixture(%{source_id: source.id, media_filepath: nil, download_retry_after: future})
+      retry_due = media_item_fixture(%{source_id: source.id, media_filepath: nil, download_retry_after: past})
+      never_failed = media_item_fixture(%{source_id: source.id, media_filepath: nil, download_retry_after: nil})
+
+      assert Enum.sort(Enum.map(Media.list_pending_media_items_for(source), & &1.id)) ==
+               Enum.sort([retry_due.id, never_failed.id])
+    end
+  end
+
   describe "pending_download?/1" do
     test "returns true when the media hasn't been downloaded" do
       media_item = media_item_fixture(%{media_filepath: nil})
@@ -418,6 +433,20 @@ defmodule Pinchflat.MediaTest do
       media_item = media_item_fixture(%{media_filepath: "/video/#{Faker.File.file_name(:video)}"})
 
       refute Media.pending_download?(media_item)
+    end
+
+    test "returns false while the media item is backing off after failed downloads" do
+      future = DateTime.add(DateTime.utc_now(), 3, :day)
+      media_item = media_item_fixture(%{media_filepath: nil, download_failure_count: 2, download_retry_after: future})
+
+      refute Media.pending_download?(media_item)
+    end
+
+    test "returns true once the media item's retry_after has passed" do
+      past = DateTime.add(DateTime.utc_now(), -60, :second)
+      media_item = media_item_fixture(%{media_filepath: nil, download_failure_count: 2, download_retry_after: past})
+
+      assert Media.pending_download?(media_item)
     end
 
     test "returns false if the media hasn't been downloaded but the profile doesn't DL shorts" do

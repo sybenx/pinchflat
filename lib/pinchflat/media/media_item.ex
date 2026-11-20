@@ -45,7 +45,9 @@ defmodule Pinchflat.Media.MediaItem do
     :prevent_download,
     :prevent_culling,
     :culled_at,
-    :media_redownloaded_at
+    :media_redownloaded_at,
+    :download_failure_count,
+    :download_retry_after
   ]
   # Pretty much all the fields captured at index are required.
   @required_fields ~w(
@@ -91,6 +93,9 @@ defmodule Pinchflat.Media.MediaItem do
 
     field :last_error, :string
     field :prevent_download, :boolean, default: false
+    # Download backoff: see Pinchflat.Downloading.DownloadBackoff
+    field :download_failure_count, :integer, default: 0
+    field :download_retry_after, :utc_datetime
     field :prevent_culling, :boolean, default: false
     field :culled_at, :utc_datetime
 

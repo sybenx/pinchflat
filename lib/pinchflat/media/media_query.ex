@@ -34,6 +34,14 @@ defmodule Pinchflat.Media.MediaQuery do
   def download_prevented, do: dynamic([mi], mi.prevent_download == true)
   def culling_prevented, do: dynamic([mi], mi.prevent_culling == true)
   def redownloaded, do: dynamic([mi], not is_nil(mi.media_redownloaded_at))
+
+  # True while a media item is backing off after failed downloads (see DownloadBackoff)
+  def download_backing_off do
+    now = DateTime.truncate(DateTime.utc_now(), :second)
+
+    dynamic([mi], not is_nil(mi.download_retry_after) and mi.download_retry_after > ^now)
+  end
+
   def upload_date_matches(other_date), do: dynamic([mi], fragment("date(?) = date(?)", mi.uploaded_at, ^other_date))
 
   def upload_date_after_source_cutoff do
@@ -129,6 +137,7 @@ defmodule Pinchflat.Media.MediaQuery do
       [mi],
       not (^downloaded()) and
         not (^download_prevented()) and
+        not (^download_backing_off()) and
         ^upload_date_after_source_cutoff() and
         ^format_matching_profile_preference() and
         ^matches_source_title_regex() and
