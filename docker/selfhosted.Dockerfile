@@ -75,6 +75,11 @@ FROM ${RUNNER_IMAGE}
 
 ARG TARGETPLATFORM
 ARG PORT=8945
+# yt-dlp plugin for the bgutil PO token provider, pinned by version and checksum.
+# Only the plugin is installed, not the provider server. With no server reachable,
+# yt-dlp logs a warning and downloads as before.
+ARG BGUTIL_POT_PROVIDER_VERSION=2.0.2
+ARG BGUTIL_POT_PROVIDER_SHA256=a26b980bf6d8e8400d8f21445daa4d8381bf6183d20f0be309391f86b31e27ef
 
 COPY --from=builder ./usr/local/bin/ffmpeg /usr/bin/ffmpeg
 COPY --from=builder ./usr/local/bin/ffprobe /usr/bin/ffprobe
@@ -112,6 +117,12 @@ RUN apt-get update -y && \
     curl -L ${YT_DLP_DOWNLOAD} -o /usr/local/bin/yt-dlp && \
     chmod a+rx /usr/local/bin/yt-dlp && \
     yt-dlp -U && \
+    # bgutil PO token provider plugin, loaded by yt-dlp from its system plugin dir
+    mkdir -p /etc/yt-dlp/plugins && \
+    curl -fsSL -o /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip \
+      "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/${BGUTIL_POT_PROVIDER_VERSION}/bgutil-ytdlp-pot-provider.zip" && \
+    echo "${BGUTIL_POT_PROVIDER_SHA256}  /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip" | sha256sum -c - && \
+    chmod a+r /etc/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip && \
     # Set the locale
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && \
     # Clean up
