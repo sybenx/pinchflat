@@ -601,4 +601,138 @@ defmodule Pinchflat.Downloading.MediaDownloadWorkerTest do
       assert Repo.reload(media_item).media_filepath != nil
     end
   end
+
+  describe "perform/1 when subtitles fail" do
+    @subtitle_429 "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"
+    @sub_keys [:write_subs, :write_auto_subs, :embed_subs, :sub_langs, :convert_subs]
+
+    setup %{media_item: media_item} do
+      {:ok, _} =
+        Pinchflat.Profiles.update_media_profile(media_item.source.media_profile, %{
+          download_subs: true,
+          download_auto_subs: true,
+          embed_subs: true,
+          sub_langs: "en"
+        })
+
+      :ok
+    end
+
+    defp has_sub_opts?(opts) do
+      Enum.any?(opts, fn
+        {key, _} -> key in @sub_keys
+        key -> key in @sub_keys
+      end)
+    end
+
+    test "retries once without subtitles and succeeds", %{media_item: media_item} do
+      test_pid = self()
+
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+
+        _url, :download, opts, _ot, _addl ->
+          send(test_pid, {:download_opts, opts})
+
+          if has_sub_opts?(opts),
+            do: {:error, @subtitle_429, 1},
+            else: {:ok, render_metadata(:media_metadata)}
+      end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+
+      assert_received {:download_opts, first_opts}
+      assert_received {:download_opts, second_opts}
+      refute_received {:download_opts, _}
+
+      assert has_sub_opts?(first_opts)
+      refute has_sub_opts?(second_opts)
+
+      media_item = Repo.reload(media_item)
+      assert media_item.media_filepath != nil
+      assert media_item.last_error == nil
+      assert media_item.download_failure_count == 0
+      refute Settings.get!(:downloads_paused_until)
+    end
+
+    test "a success after the fallback resets the backoff", %{media_item: media_item} do
+      {:ok, media_item} =
+        Media.update_media_item(media_item, %{
+          download_failure_count: 2,
+          download_retry_after: DateTime.add(DateTime.utc_now(), -1, :minute)
+        })
+
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download_thumbnail, _opts, _ot, _addl ->
+          {:ok, ""}
+
+        _url, :download, opts, _ot, _addl ->
+          if has_sub_opts?(opts), do: {:error, @subtitle_429, 1}, else: {:ok, render_metadata(:media_metadata)}
+      end)
+
+      assert :ok = perform_job(MediaDownloadWorker, %{id: media_item.id})
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 0
+      assert media_item.download_retry_after == nil
+    end
+
+    test "a permanent error on the fallback prevents the download", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, opts, _ot, _addl ->
+          if has_sub_opts?(opts),
+            do: {:error, @subtitle_429, 1},
+            else: {:error, "ERROR: [youtube] abc: Private video. Sign in if you've been granted access", 1}
+      end)
+
+      assert {:ok, :non_retry} = perform_job(MediaDownloadWorker, %{id: media_item.id})
+
+      media_item = Repo.reload(media_item)
+      assert media_item.prevent_download
+      assert media_item.last_error =~ "Private video"
+      refute Settings.get!(:downloads_paused_until)
+    end
+
+    test "a retryable error on the fallback counts against the item", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl ->
+          {:ok, "{}"}
+
+        _url, :download, opts, _ot, _addl ->
+          if has_sub_opts?(opts),
+            do: {:error, @subtitle_429, 1},
+            else: {:error, "ERROR: Postprocessing: Conversion failed!", 1}
+      end)
+
+      assert {:error, :download_failed} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 3)
+
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 1
+      refute Settings.get!(:downloads_paused_until)
+    end
+
+    test "a subtitle error never pauses downloads, even if the fallback hits it too", %{media_item: media_item} do
+      stub(YtDlpRunnerMock, :run, fn
+        _url, :get_downloadable_status, _opts, _ot, _addl -> {:ok, "{}"}
+        _url, :download, _opts, _ot, _addl -> {:error, @subtitle_429, 1}
+      end)
+
+      assert {:error, :download_failed} = perform_job(MediaDownloadWorker, %{id: media_item.id}, attempt: 3)
+
+      refute Settings.get!(:downloads_paused_until)
+      media_item = Repo.reload(media_item)
+      assert media_item.download_failure_count == 1
+      refute media_item.prevent_download
+    end
+  end
 end

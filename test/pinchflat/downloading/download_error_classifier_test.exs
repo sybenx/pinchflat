@@ -3,6 +3,18 @@ defmodule Pinchflat.Downloading.DownloadErrorClassifierTest do
 
   alias Pinchflat.Downloading.DownloadErrorClassifier
 
+  describe "classify/1 with subtitle failures" do
+    for message <- [
+          "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests",
+          "ERROR: Unable to download video subtitles for 'en': HTTP Error 404: Not Found",
+          "WARNING: Unable to download video subtitles for 'de': timed out"
+        ] do
+      test "treats #{inspect(message)} as a subtitle failure, not a rate limit" do
+        assert DownloadErrorClassifier.classify(unquote(message)) == :subtitles_failed
+      end
+    end
+  end
+
   describe "classify/1 with permanent errors" do
     for message <- [
           "ERROR: [youtube] abc: This video is available to this channel's members on level: Tier 1",
@@ -25,8 +37,8 @@ defmodule Pinchflat.Downloading.DownloadErrorClassifierTest do
   describe "classify/1 with rate limits" do
     for message <- [
           "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser",
-          "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests",
           "ERROR: [youtube] abc: Video unavailable. This content isn't available, try again later.",
+          "ERROR: [youtube] abc: HTTP Error 429: Too Many Requests",
           "HTTP Error 429",
           "Too Many Requests",
           "You have been rate-limited by YouTube",
@@ -41,7 +53,6 @@ defmodule Pinchflat.Downloading.DownloadErrorClassifierTest do
   describe "classify/1 with other retryable errors" do
     for message <- [
           "ERROR: Postprocessing: Conversion failed!",
-          "ERROR: Unable to download video subtitles for 'en': HTTP Error 404: Not Found",
           "ERROR: [youtube] abc: Read timed out.",
           "ERROR: Unable to download webpage: <urlopen error [Errno -3] Temporary failure in name resolution>",
           "HTTP Error 503: Service Unavailable",
