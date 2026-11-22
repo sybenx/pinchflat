@@ -147,6 +147,24 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilderTest do
       assert {:sub_langs, "en"} in res
     end
 
+    test "skip_subtitles drops every subtitle option", %{media_item: media_item} do
+      media_item =
+        update_media_profile_attribute(media_item, %{
+          download_subs: true,
+          download_auto_subs: true,
+          embed_subs: true,
+          sub_langs: "en"
+        })
+
+      assert {:ok, res} = DownloadOptionBuilder.build(media_item, skip_subtitles: true)
+
+      refute :write_subs in res
+      refute :write_auto_subs in res
+      refute :embed_subs in res
+      refute Keyword.has_key?(res, :sub_langs)
+      refute Keyword.has_key?(res, :convert_subs)
+    end
+
     test "doesn't include sub_langs option when neither downloading nor embedding", %{media_item: media_item} do
       media_item =
         update_media_profile_attribute(media_item, %{embed_subs: false, download_subs: false, sub_langs: "en"})

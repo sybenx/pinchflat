@@ -108,7 +108,45 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
     overwrite_behaviour = if should_force || is_quality_upgrade, do: :force_overwrites, else: :no_force_overwrites
     override_opts = [overwrite_behaviour: overwrite_behaviour]
 
-    case MediaDownloader.download_for_media_item(media_item, override_opts) do
+    media_item
+    |> MediaDownloader.download_for_media_item(override_opts)
+    |> maybe_retry_without_subtitles(media_item, override_opts)
+    |> handle_download_result(media_item, is_quality_upgrade, job)
+  end
+
+  # A subtitle track that fails to download (often a 429 on one video's track)
+  # is the video's problem, not a rate limit. Retry once right away without any
+  # subtitle options; whatever that attempt returns is handled normally.
+  defp maybe_retry_without_subtitles({:error, error_atom, message} = result, media_item, override_opts)
+       when error_atom != :unsuitable_for_download do
+    case DownloadErrorClassifier.classify(message) do
+      :subtitles_failed ->
+        Logger.warning(
+          "Subtitles failed for media item ##{media_item.id}, retrying without subtitles: #{inspect(message)}"
+        )
+
+        override_opts = Keyword.put(override_opts, :skip_subtitles, true)
+        # Reloaded so a success clears the last_error the first attempt just saved
+        media_item = Repo.reload!(media_item)
+
+        case MediaDownloader.download_for_media_item(media_item, override_opts) do
+          {:ok, _} = success ->
+            Logger.info("Downloaded media item ##{media_item.id} without subtitles")
+            success
+
+          other ->
+            other
+        end
+
+      _ ->
+        result
+    end
+  end
+
+  defp maybe_retry_without_subtitles(result, _media_item, _override_opts), do: result
+
+  defp handle_download_result(result, media_item, is_quality_upgrade, job) do
+    case result do
       {:ok, downloaded_media_item} ->
         {:ok, updated_media_item} =
           Media.update_media_item(downloaded_media_item, %{
@@ -142,6 +180,8 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
   defp get_redownloaded_at(true), do: DateTime.utc_now()
   defp get_redownloaded_at(_), do: nil
 
+  # Subtitle failures never get here as such: they are retried without subtitles
+  # first (see maybe_retry_without_subtitles) and the retry's error is classified.
   # Permanent errors are never retried and the item is marked `prevent_download`.
   # Rate limits pause all downloads and snooze this job until the pause ends,
   # without counting against the item. Anything else is retried by Oban (up to
@@ -170,7 +210,9 @@ defmodule Pinchflat.Downloading.MediaDownloadWorker do
 
         {:ok, :non_retry}
 
-      :retryable ->
+      # Only reached if the no-subtitles retry failed on subtitles again, which
+      # should not happen. Never pause for it; count it like any other failure.
+      class when class in [:retryable, :subtitles_failed] ->
         if final_attempt?(job) && !is_downloaded do
           {:ok, _} = DownloadBackoff.record_failure(media_item)
         end

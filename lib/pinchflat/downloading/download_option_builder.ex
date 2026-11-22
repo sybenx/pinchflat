@@ -21,7 +21,7 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
 
     built_options =
       default_options(override_opts) ++
-        subtitle_options(media_profile) ++
+        subtitle_options(media_profile, override_opts) ++
         thumbnail_options(media_item_with_preloads) ++
         metadata_options(media_profile) ++
         quality_options(media_profile) ++
@@ -77,6 +77,16 @@ defmodule Pinchflat.Downloading.DownloadOptionBuilder do
       # This makes the date metadata conform to what jellyfin expects
       parse_metadata: "%(upload_date>%Y-%m-%d)s:(?P<meta_date>.+)"
     ]
+  end
+
+  # `skip_subtitles: true` drops every subtitle option for this call. The
+  # download worker uses it to retry an item whose subtitle track keeps failing.
+  defp subtitle_options(media_profile, override_opts) do
+    if Keyword.get(override_opts, :skip_subtitles, false) do
+      []
+    else
+      subtitle_options(media_profile)
+    end
   end
 
   defp subtitle_options(media_profile) do
